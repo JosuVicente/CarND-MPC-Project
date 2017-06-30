@@ -35,7 +35,7 @@ string hasData(string s) {
 // Evaluate a polynomial.
 double polyeval(Eigen::VectorXd coeffs, double x) {
   double result = 0.0;
-  for (int i = 0; i < coeffs.size(); i++) {
+  for (auto i = 0; i < coeffs.size(); i++) {
     result += coeffs[i] * pow(x, i);
   }
   return result;
@@ -50,12 +50,12 @@ Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
   assert(order >= 1 && order <= xvals.size() - 1);
   Eigen::MatrixXd A(xvals.size(), order + 1);
 
-  for (int i = 0; i < xvals.size(); i++) {
+  for (auto i = 0; i < xvals.size(); i++) {
     A(i, 0) = 1.0;
   }
 
   for (int j = 0; j < xvals.size(); j++) {
-    for (int i = 0; i < order; i++) {
+    for (auto i = 0; i < order; i++) {
       A(j, i + 1) = A(j, i) * xvals(j);
     }
   }
@@ -77,7 +77,7 @@ int main() {
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
     string sdata = string(data).substr(0, length);
-    cout << sdata << endl;
+    //cout << sdata << endl;
     if (sdata.size() > 2 && sdata[0] == '4' && sdata[1] == '2') {
       string s = hasData(sdata);
       if (s != "") {
@@ -98,8 +98,32 @@ int main() {
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+
+		  // Transform from map coordinates to car coordinates
+		  auto waypoints = Eigen::MatrixXd(2, ptsx.size());
+		  for (auto i = 0; i<ptsx.size(); ++i) {
+			  waypoints(0, i) = cos(psi) * (ptsx[i] - px) + sin(psi) * (ptsy[i] - py);
+			  waypoints(1, i) = -sin(psi) * (ptsx[i] - px) + cos(psi) * (ptsy[i] - py);
+		  }
+
+		  // Fit 3rd level polynomial
+		  auto coeffs = polyfit(waypoints.row(0), waypoints.row(1), 3);
+
+		  // Get cte
+		  double cte = polyeval(coeffs, 0); 
+
+		  // Get epsi
+		  double epsi = -atan(coeffs[1]);  
+
+		  // State
+		  Eigen::VectorXd state(6);
+		  state << 0, 0, 0, v, cte, epsi;
+
+		  // Get optimal trajectory
+		  auto vars = mpc.Solve(state, coeffs);
+
+		  double steer_value = vars[0] / (deg2rad(25));
+          double throttle_value = vars[1];
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
@@ -113,6 +137,14 @@ int main() {
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
+		  for (auto i = 2; i < vars.size(); i++) {
+			  if (i % 2 == 0) {
+				  mpc_x_vals.push_back(vars[i]);
+			  }
+			  else {
+				  mpc_y_vals.push_back(vars[i]);
+			  }
+		  }
 
           msgJson["mpc_x"] = mpc_x_vals;
           msgJson["mpc_y"] = mpc_y_vals;
@@ -123,13 +155,17 @@ int main() {
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
+		  for (double i = 0; i < 100; i += 3) {
+			  next_x_vals.push_back(i);
+			  next_y_vals.push_back(polyeval(coeffs, i));
+		  }
 
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
 
 
           auto msg = "42[\"steer\"," + msgJson.dump() + "]";
-          std::cout << msg << std::endl;
+          //std::cout << msg << std::endl;
           // Latency
           // The purpose is to mimic real driving conditions where
           // the car does actuate the commands instantly.
