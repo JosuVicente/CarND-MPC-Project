@@ -1,7 +1,130 @@
-# CarND-Controls-MPC
+# Nonlinear Model Predictive Control with actuator delays.
 Self-Driving Car Engineer Nanodegree Program
 
 ---
+
+<p align="center">
+<a href="https://www.youtube.com/embed/M-ln2ERYxz0" target="_blank"><img src="https://img.youtube.com/vi/M-ln2ERYxz0/0.jpg" 
+alt="NMPC" width="480" height="360" border="10" /></a>
+</p>
+<p align="center">
+<a href="https://www.youtube.com/embed/M-ln2ERYxz0" target="_blank">https://www.youtube.com/watch?v=M-ln2ERYxz0</a>
+</p>
+
+## Description
+The purpose of this project is to guide a car through a track in a simulator by controlling its steering and speed. To accomplish this task a MPC is used to calculate those values and pass them back. Values provided by the simulator with the state of the car are used to calculate the steering and speed. In addition to the steering and speed values a list of coordinates with the waypoints along the trajectory path and another list with the coordinates of the calculated trajectory are passed back to the simulator to be displayed.
+
+## Vehicle Model
+The model used for the vehicle in the simulator is a kinematic bicycle model which is a model which by neglecting some dynamical effects simplifies the jobs althogugh it sacrifices accuracy. The following equations are used on this model:
+
+##### Position (x, y)    
+      // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
+      // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
+      
+##### Orientation (psi)    
+      // psi_[t+1] = psi[t] - v[t] / Lf * delta[t] * dt
+      
+##### Velocity (v)    
+      // v_[t+1] = v[t] + a[t] * dt
+      
+##### Cross Track Error (cte)    
+      // cte[t+1] = f(x[t]) - y[t] + v[t] * sin(epsi[t]) * dt
+      
+##### Orientation Error (epsi)    
+      // epsi[t+1] = psi[t] - psides[t] - v[t] * delta[t] / Lf * dt
+
+`delta` is the steering angle actuator and `a` the acceleration actuator.
+
+## Configuration variables
+##### Lf
+Is the distance between the center of gravity of the vehicle and the front wheels. It's set to `2.67`.
+
+##### N
+Timestep lenght. It's set to `12`.
+
+##### dt
+Timestep frequency. It's set to `0.05s`. With the value of N this means we're going to predict the trajectory for `0.6s`.
+
+##### ref_v
+Is the reference velocity of the vehicle and it's set to `65mph`.
+
+##### latency_units
+The latency is `100ms` so the value of latency units it's calculated like this: `(int) 0.1 / dt`. With the values used this is `2`.
+
+Other values were tried for N and dt but found these ones to be the ones that let the vehicle drive as fast as 65mph without going out of track based on the model developed. As mentioned above the prediction horizon is `0.6s`. Short prediction horizons are more responsive but long ones are more accurate so it's a trade off.
+
+## Process
+With the values received by the simulator first thing is to transform the map coordinates of the waypoints provided into map coordinates:
+``` 
+//        auto waypoints = Eigen::MatrixXd(2, ptsx.size());
+//		  for (auto i = 0; i<ptsx.size(); ++i) {
+//			  waypoints(0, i) = cos(psi) * (ptsx[i] - px) + sin(psi) * (ptsy[i] - py);
+//			  waypoints(1, i) = -sin(psi) * (ptsx[i] - px) + cos(psi) * (ptsy[i] - py);
+//		  }
+```
+
+After that we calculate the cte and the epsi by fitting a 3rd order polynomial from the waypoints:
+``` 
+//        auto coeffs = polyfit(waypoints.row(0), waypoints.row(1), 3);
+//		  double cte = polyeval(coeffs, 0); 
+//		  double epsi = -atan(coeffs[1]);  
+```
+
+And then initialize the state and pass it along with the polynomial to the Solve function that will return the steering and speed that we normalize to send it back to the simulator:
+``` 
+//        state << 0, 0, 0, v, cte, epsi;
+//		  auto vars = mpc.Solve(state, coeffs);
+//		  double steer_value = vars[0] / (deg2rad(25));
+//		  double throttle_value = vars[1];
+```
+The solve function given the initial state and the third order polynomial will calculate the values to pass to the actuators from those that minimize the cost function. In the solve function the cost is calculated like this:
+``` 
+//        state << 0, 0, 0, v, cte, epsi;
+//        for (unsigned int t = 0; t < N; t++) {
+//        		fg[0] += CppAD::pow(vars[cte_start + t], 2);
+//        		fg[0] += 10 * CppAD::pow(vars[epsi_start + t], 2);
+//        		fg[0] += CppAD::pow(vars[v_start + t] - ref_v, 2);
+//        }
+//        
+//        for (unsigned int t = 0; t < N - 1; t++) {
+//        		fg[0] += CppAD::pow(vars[delta_start + t], 2);
+//        		fg[0] += CppAD::pow(vars[a_start + t], 2);
+//        }
+//        
+//        for (unsigned int t = 0; t < N - 2; t++) {
+//        		fg[0] += 10000 * CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
+//        		fg[0] += 10 * CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+//        }
+```
+
+And the constraints:
+``` 
+//      for (unsigned int t = 1; t < N; t++) {
+//          AD<double> x1 = vars[x_start + t];
+//      	AD<double> y1 = vars[y_start + t];
+//      	AD<double> psi1 = vars[psi_start + t];
+//      	AD<double> v1 = vars[v_start + t];
+//      	AD<double> cte1 = vars[cte_start + t];
+//      	AD<double> epsi1 = vars[epsi_start + t];
+//      	AD<double> x0 = vars[x_start + t - 1];
+//      	AD<double> y0 = vars[y_start + t - 1];
+//      	AD<double> psi0 = vars[psi_start + t - 1];
+//      	AD<double> v0 = vars[v_start + t - 1];
+//      	AD<double> cte0 = vars[cte_start + t - 1];
+//      	AD<double> epsi0 = vars[epsi_start + t - 1];
+//      	AD<double> delta0 = vars[delta_start + t - 1];
+//      	AD<double> a0 = vars[a_start + t - 1];
+//      	AD<double> f0 = coeffs[0] + coeffs[1] * x0 + coeffs[2] * CppAD::pow(x0, 2) + coeffs[3] * CppAD::pow(x0, 3);
+//      	AD<double> psides0 = CppAD::atan(coeffs[1] + 2 * coeffs[2] * x0 + 3 * coeffs[3] * CppAD::pow(x0, 2));
+//      
+//      	fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
+//      	fg[1 + y_start + t] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
+//      	fg[1 + psi_start + t] = psi1 - (psi0 - v0 / Lf * delta0 * dt);
+//      	fg[1 + v_start + t] = v1 - (v0 + a0 * dt);
+//      	fg[1 + cte_start + t] = cte1 - (f0 - y0 + (v0 * CppAD::sin(epsi0) * dt));
+//      	fg[1 + epsi_start + t] = epsi1 - (psi0 - psides0 + v0 / Lf * delta0 * dt);
+//      }
+```
 
 ## Dependencies
 
@@ -15,20 +138,11 @@ Self-Driving Car Engineer Nanodegree Program
   * Linux: gcc / g++ is installed by default on most Linux distros
   * Mac: same deal as make - [install Xcode command line tools]((https://developer.apple.com/xcode/features/)
   * Windows: recommend using [MinGW](http://www.mingw.org/)
-* [uWebSockets](https://github.com/uWebSockets/uWebSockets)
-  * Run either `install-mac.sh` or `install-ubuntu.sh`.
-  * If you install from source, checkout to commit `e94b6e1`, i.e.
-    ```
-    git clone https://github.com/uWebSockets/uWebSockets 
-    cd uWebSockets
-    git checkout e94b6e1
-    ```
-    Some function signatures have changed in v0.14.x. See [this PR](https://github.com/udacity/CarND-MPC-Project/pull/3) for more details.
-* Fortran Compiler
-  * Mac: `brew install gcc` (might not be required)
-  * Linux: `sudo apt-get install gfortran`. Additionall you have also have to install gcc and g++, `sudo apt-get install gcc g++`. Look in [this Dockerfile](https://github.com/udacity/CarND-MPC-Quizzes/blob/master/Dockerfile) for more info.
+* [uWebSockets](https://github.com/uWebSockets/uWebSockets) == 0.14, but the master branch will probably work just fine
+  * Follow the instructions in the [uWebSockets README](https://github.com/uWebSockets/uWebSockets/blob/master/README.md) to get setup for your platform. You can download the zip of the appropriate version from the [releases page](https://github.com/uWebSockets/uWebSockets/releases). Here's a link to the [v0.14 zip](https://github.com/uWebSockets/uWebSockets/archive/v0.14.0.zip).
+  * If you have MacOS and have [Homebrew](https://brew.sh/) installed you can just run the ./install-mac.sh script to install this.
 * [Ipopt](https://projects.coin-or.org/Ipopt)
-  * Mac: `brew install ipopt`
+  * Mac: `brew install ipopt --with-openblas`
   * Linux
     * You will need a version of Ipopt 3.12.1 or higher. The version available through `apt-get` is 3.11.x. If you can get that version to work great but if not there's a script `install_ipopt.sh` that will install Ipopt. You just need to download the source from the Ipopt [releases page](https://www.coin-or.org/download/source/Ipopt/) or the [Github releases](https://github.com/coin-or/Ipopt/releases) page.
     * Then call `install_ipopt.sh` with the source directory as the first argument, ex: `bash install_ipopt.sh Ipopt-3.12.1`. 
@@ -38,8 +152,8 @@ Self-Driving Car Engineer Nanodegree Program
   * Linux `sudo apt-get install cppad` or equivalent.
   * Windows: TODO. If you can use the Linux subsystem and follow the Linux instructions.
 * [Eigen](http://eigen.tuxfamily.org/index.php?title=Main_Page). This is already part of the repo so you shouldn't have to worry about it.
-* Simulator. You can download these from the [releases tab](https://github.com/udacity/self-driving-car-sim/releases).
-* Not a dependency but read the [DATA.md](./DATA.md) for a description of the data sent back from the simulator.
+* Simulator. You can download these from the [releases tab](https://github.com/udacity/CarND-MPC-Project/releases).
+
 
 
 ## Basic Build Instructions
